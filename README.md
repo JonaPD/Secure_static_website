@@ -6,7 +6,7 @@ Este proyecto implementa una solución completa para el **Cloud Resume Challenge
 
 ## 🏗️ Arquitectura
 
-![Arquitectura del Proyecto](https://mi-url-de-imagen.com/diagrama.png) <!-- Agrega una URL si tienes un diagrama arquitectónico -->
+<!--![Arquitectura del Proyecto](https://mi-url-de-imagen.com/diagrama.png) -->
 
 1. **Frontend**:
    - Sitio web estático (HTML/CSS/JavaScript) alojado en Amazon S3.
@@ -47,5 +47,5 @@ Antes de comenzar, asegúrate de tener lo siguiente:
 ### **1. Desplegar Infraestructura**
 1. Clona este repositorio:
    ```bash
-   git clone https://github.com/JonaPD/cloud-resume-challenge.git
-   cd cloud-resume-challenge
+   git clone https://github.com/JonaPD/Secure_static_website.git
+   cd secure_static_website
