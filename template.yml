@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Recursos necesarios para Cafeteria cloud
+
+Resources:
+  # Bucket S3 para la página web
+  StaticWebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: website-cafeteria
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false  # Permitir ACLs públicas
+        IgnorePublicAcls: false # Permitir la política pública
+        BlockPublicPolicy: false # Permitir políticas públicas
+        RestrictPublicBuckets: false # No restringir el acceso público a los buckets
+
+  # Política para permitir acceso público
+  StaticWebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticWebsiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${StaticWebsiteBucket.Arn}/*"
+
+  # Tabla DynamoDB
+  CountTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: CountTable
+      AttributeDefinitions:
+        - AttributeName: ID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # Función Lambda
+  VisitorCountFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: VisitorCountFunction
+      Runtime: python3.9
+      Handler: index.lambda_handler 
+      Role: !GetAtt VisitorCountLambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          from decimal import Decimal
+          import os
+
+          dynamodb = boto3.resource('dynamodb')
+          table_name = os.environ['TABLE_NAME']
+          table = dynamodb.Table(table_name)
+
+          def lambda_handler(event, context):
+              # Obtener el contador actual
+              response = table.get_item(Key={'ID': 'contador'})
+              if 'Item' in response:
+                  visitas = int(response['Item']['visitas']) + 1  # Convertimos Decimal a int
+              else:
+                  visitas = 1  # Si no existe, inicializamos el contador en 1
+              
+              # Actualizar el contador en la tabla
+              table.put_item(Item={'ID': 'contador', 'visitas': Decimal(visitas)})
+              
+              # Respuesta a la API
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Content-Type': 'application/json',
+                      'Access-Control-Allow-Origin': '*',  # Permitir CORS
+                      'Access-Control-Allow-Methods': 'OPTIONS, GET'  # Permitir métodos GET y OPTIONS
+                  },
+                  'body': json.dumps({'visitas': visitas})
+              }
+
+      Environment:
+        Variables:
+          TABLE_NAME: CountTable
+
+  # Rol de Ejecución de Lambda
+  VisitorCountLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: VisitorCountLambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: VisitorCountDynamoDBPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt CountTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+  # Método GET y OPTIONS para la API en la raíz
+  VisitorCountApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: VisitorCountApi
+
+  # Método GET
+  VisitorCountApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VisitorCountApi
+      ResourceId: !GetAtt VisitorCountApi.RootResourceId
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VisitorCountFunction.Arn}/invocations
+
+  # Método OPTIONS para la API (habilitar CORS)
+  VisitorCountApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      RestApiId: !Ref VisitorCountApi
+      ResourceId: !GetAtt VisitorCountApi.RootResourceId 
+      Integration:
+        IntegrationHttpMethod: OPTIONS
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Headers: true
+
+  # Permiso para que API Gateway invoque Lambda
+  VisitorCountLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VisitorCountFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${VisitorCountApi}/*/GET/
+
+  # Despliegue de la API Gateway 
+  VisitorCountApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: VisitorCountApiMethod
+    Properties:
+      RestApiId: !Ref VisitorCountApi
+      StageName: DEV
+
+  # CloudFront Distribution
+  VisitorCountCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: ""
+        Origins:
+          - DomainName: !Sub "${VisitorCountApi}.execute-api.${AWS::Region}.amazonaws.com"
+            Id: VisitorCountApiOrigin
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+        DefaultCacheBehavior:
+          TargetOriginId: VisitorCountApiOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: 
+            - HEAD
+            - GET
+            - OPTIONS  # Métodos válidos
+          CachedMethods: 
+            - HEAD
+            - GET   # Métodos válidos para cache
+          ForwardedValues:
+            QueryString: true
+            Headers: 
+              - Access-Control-Allow-Origin
+              - Access-Control-Allow-Methods
+              - Access-Control-Allow-Headers
+            Cookies:
+              Forward: none
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        HttpVersion: http2

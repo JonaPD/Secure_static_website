@@ -1,0 +1,16 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Instalando dependecias"
+      - pip install awscli
+  build:
+    commands:
+      - echo "Construyendo imagen Docker"
+      - aws s3 ls
+      - echo "Construyendo el lambda package"
+      - aws cloudformation validate-template --template-body file://template.yml
+artifacts:
+  files:
+    - template.yml
